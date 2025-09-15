@@ -1,0 +1,12 @@
+#Folders
+/data/raw_ham/
+/data/dataset/test/
+/data/dataset/train/
+/data/dataset/val/
+/venv/
+
+#Files
+check.py
+Implementation Paper.pdf
+intel.py
+train_balanced.csv
