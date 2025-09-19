@@ -1,0 +1,6 @@
+dataset -> this folder contain augmented images split into 3 sub folders
+            |->train : 80% of main dataset use to train the model
+            |->test : 10% of main dataset use to testing the model
+            |->val : 10% of main dataset use to validating the model
+
+raw_ham -> this folder contain raw dataset provided by HAM10000 on SKIN Cancer

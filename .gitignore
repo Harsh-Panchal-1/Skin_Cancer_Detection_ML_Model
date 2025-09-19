@@ -1,8 +1,8 @@
 #Folders
-**/data/raw_ham/
-**/data/dataset/test/
-**/data/dataset/train/
-**/data/dataset/val/
+**/data/raw_ham/*
+**/data/dataset/test/*
+**/data/dataset/train/*
+**/data/dataset/val/*
 /venv/
 /temp
 
