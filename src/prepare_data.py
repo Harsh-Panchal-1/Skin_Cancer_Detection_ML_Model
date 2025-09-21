@@ -1,101 +1,96 @@
 import os
 import shutil
 import pandas as pd
-import numpy as np
 from sklearn.model_selection import train_test_split
-from tensorflow.keras.preprocessing.image import ImageDataGenerator, img_to_array, load_img, array_to_img
 from tqdm import tqdm
+from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array, array_to_img
 
+# --- Configuration ---
 RAW_DIR = "data/raw_ham"
-OUT_DIR = "data/dataset"
+OUT_DIR = "data/dataset_balanced_offline" # New directory for this dataset
+METADATA_FILE = os.path.join(RAW_DIR, "ham10000_metadata_2025-08-30.csv")
+TARGET_SIZE = (128, 128)
+TARGET_COUNT_PER_CLASS = 6500 # The target number of images per class after balancing
 
-CLASSES = ['Solar or actinic keratosis','Basal cell carcinoma','Pigmented benign keratosis','Dermatofibroma','Melanoma, NOS','Nevus','Squamous cell carcinoma, NOS']
+CLASS_MAP = {
+    'Solar or actinic keratosis': 'akiec', 'Basal cell carcinoma': 'bcc',
+    'Pigmented benign keratosis': 'bkl', 'Dermatofibroma': 'df',
+    'Melanoma, NOS': 'mel', 'Nevus': 'nv', 'Vascular lesions': 'vasc',
+    'Squamous cell carcinoma, NOS': 'vasc'
+}
+# --- End Configuration ---
 
-def prepare_split(target_size=(28,28)):
-    """Create stratified train/val/test split (80%/10%/10%), resizing all to 28x28."""
-    meta = pd.read_csv(os.path.join(RAW_DIR, "ham10000_metadata_2025-08-30.csv"))
-    meta = meta[meta['diagnosis_3'].isin(CLASSES)].copy()
+def prepare_balanced_offline_dataset():
+    """Creates a balanced offline dataset by over/under-sampling the training set."""
+    if os.path.exists(OUT_DIR):
+        print(f"'{OUT_DIR}' already exists. Please delete it to regenerate.")
+        return
+
+    meta = pd.read_csv(METADATA_FILE)
+    meta['dx_short'] = meta['diagnosis_3'].map(CLASS_MAP)
+    meta.dropna(subset=['dx_short'], inplace=True)
     meta['filename'] = meta['isic_id'] + ".jpg"
 
-    # stratified split
-    train, temp = train_test_split(meta, test_size=0.2, stratify=meta['diagnosis_3'], random_state=42)
-    val, test = train_test_split(temp, test_size=0.5, stratify=temp['diagnosis_3'], random_state=42)
+    # Step 1: Create initial train/val/test split from the original data
+    train_df, temp_df = train_test_split(meta, test_size=0.2, stratify=meta['dx_short'], random_state=42)
+    val_df, test_df = train_test_split(temp_df, test_size=0.5, stratify=temp_df['dx_short'], random_state=42)
 
-    # function to copy + resize
-    def copy_and_resize(df, split_name):
-        for cls in CLASSES:
-            os.makedirs(os.path.join(OUT_DIR, split_name, cls), exist_ok=True)
-        for _, row in df.iterrows():
-            src = os.path.join(RAW_DIR, row['filename'])
-            dst = os.path.join(OUT_DIR, split_name, row['diagnosis_3'], row['filename'])
-            if os.path.exists(src):
-                try:
-                    img = load_img(src, target_size=target_size)  # resize
-                    img.save(dst)
-                except Exception as e:
-                    print("Error resizing:", src, e)
+    # Step 2: Balance the training DataFrame
+    print("Balancing training data...")
+    samples = []
+    for cls in train_df['dx_short'].unique():
+        class_df = train_df[train_df['dx_short'] == cls]
+        if len(class_df) > TARGET_COUNT_PER_CLASS: # Undersample
+            samples.append(class_df.sample(TARGET_COUNT_PER_CLASS, random_state=42))
+        else: # Keep all original samples for oversampling later
+            samples.append(class_df)
+    balanced_train_df = pd.concat(samples)
 
-    copy_and_resize(train, "train")
-    copy_and_resize(val, "val")
-    copy_and_resize(test, "test")
+    # Step 3: Set up ImageDataGenerator for augmentation
+    datagen = ImageDataGenerator(rotation_range=20, width_shift_range=0.1, height_shift_range=0.1,
+                                 shear_range=0.1, zoom_range=0.1, horizontal_flip=True, fill_mode='nearest')
 
-    return train, val, test
+    # Step 4: Copy/Resize/Augment images to the new directory
+    print("Processing and saving images...")
+    for split_name, df in [('train', balanced_train_df), ('val', val_df), ('test', test_df)]:
+        is_training_set = (split_name == 'train')
+        for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Processing {split_name}"):
+            cls = row['dx_short']
+            split_dir = os.path.join(OUT_DIR, split_name, cls)
+            os.makedirs(split_dir, exist_ok=True)
+            
+            src_path = os.path.join(RAW_DIR, row['filename'])
+            dst_path = os.path.join(split_dir, row['filename'])
 
-def augment_balance(train_df, target_size=(28,28)):
-    """Augment minority classes until balanced (with brightness/contrast)."""
-    train_dir = os.path.join(OUT_DIR, "train")
-    max_count = train_df['diagnosis_3'].value_counts().max()
+            if os.path.exists(src_path):
+                img = load_img(src_path, target_size=TARGET_SIZE)
+                img.save(dst_path) # Save the original (or undersampled) image
 
-    datagen = ImageDataGenerator(
-        rotation_range=40,
-        width_shift_range=0.1,
-        height_shift_range=0.1,
-        shear_range=0.1,
-        zoom_range=0.2,
-        horizontal_flip=True,
-        brightness_range=[0.8, 1.2],   # as per paper
-        fill_mode="nearest"
-    )
+        # Augment only the training set
+        if is_training_set:
+            for cls in df['dx_short'].unique():
+                class_dir = os.path.join(OUT_DIR, split_name, cls)
+                current_count = len(os.listdir(class_dir))
+                num_to_augment = TARGET_COUNT_PER_CLASS - current_count
 
-    balanced_meta = []
+                if num_to_augment > 0:
+                    print(f"Augmenting class '{cls}' with {num_to_augment} new images...")
+                    original_images = [os.path.join(class_dir, f) for f in os.listdir(class_dir)]
+                    i = 0
+                    for _ in tqdm(range(num_to_augment)):
+                        img = load_img(original_images[i % len(original_images)])
+                        x = img_to_array(img)
+                        x = x.reshape((1,) + x.shape)
+                        
+                        # Generate one augmented image
+                        aug_iter = datagen.flow(x, batch_size=1)
+                        aug_image = next(aug_iter)[0].astype('uint8')
+                        
+                        save_path = os.path.join(class_dir, f'aug_{i}.jpg')
+                        array_to_img(aug_image).save(save_path)
+                        i += 1
+    
+    print("Balanced offline dataset created successfully.")
 
-    for cls in CLASSES:
-        cls_dir = os.path.join(train_dir, cls)
-        os.makedirs(cls_dir, exist_ok=True)
-
-        cls_df = train_df[train_df['diagnosis_3'] == cls]
-        balanced_meta.append(cls_df)
-
-        n_to_add = max_count - len(cls_df)
-        if n_to_add <= 0:
-            continue
-
-        images = list(cls_df['filename'])
-        i = 0
-        pbar = tqdm(total=n_to_add, desc=f"Augmenting {cls}")
-        while n_to_add > 0:
-            img_path = os.path.join(RAW_DIR, images[i % len(images)])
-            if not os.path.exists(img_path):
-                i += 1
-                continue
-
-            img = load_img(img_path, target_size=target_size)
-            x = img_to_array(img)
-            x = x.reshape((1,) + x.shape)
-
-            for batch in datagen.flow(x, batch_size=1):
-                new_name = f"aug_{cls}_{i}_{np.random.randint(1e6)}.jpg"
-                save_path = os.path.join(cls_dir, new_name)
-                array_to_img(batch[0]).save(save_path)
-
-                new_row = {"isic_id": new_name.replace(".jpg",""), "diagnosis_3": cls, "filename": new_name}
-                balanced_meta.append(pd.DataFrame([new_row]))
-                n_to_add -= 1
-                pbar.update(1)
-                break
-            i += 1
-        pbar.close()
-
-    balanced_df = pd.concat(balanced_meta, ignore_index=True)
-    balanced_df.to_csv(os.path.join(OUT_DIR, "train_balanced.csv"), index=False)
-    return balanced_df
+if __name__ == '__main__':
+    prepare_balanced_offline_dataset()

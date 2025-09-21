@@ -1,8 +1,12 @@
 #Folders
+**/data/dataset_balanced_offline/*
 **/data/raw_ham/*
 **/data/dataset/test/*
 **/data/dataset/train/*
 **/data/dataset/val/*
+**/data/dataset_balanced_offline/test/*
+**/data/dataset_balanced_offline/train/*
+**/data/dataset_balanced_offline/val/*
 /venv/
 /temp
 
