@@ -1,6 +1,6 @@
 import tensorflow as tf
 from tensorflow.keras import layers
-import os # <-- FIX: Import the 'os' module
+import os
 
 IMG_SIZE = (128, 128)
 BATCH_SIZE = 64
